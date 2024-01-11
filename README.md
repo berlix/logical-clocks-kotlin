@@ -1,0 +1,159 @@
+# Logical clocks for Kotlin Multiplatform
+
+[![Release](https://img.shields.io/github/v/release/berlix/logical-clocks-kotlin.svg)](https://github.com/berlix/logical-clocks-kotlin/releases)
+
+[API documentation](https://berlix.github.io/logical-clocks-kotlin/apidocs/latest/)
+
+This library contains implementations of different logical clocks for Kotlin Multiplatform:
+
+* A [Lamport clock](https://en.wikipedia.org/wiki/Lamport_timestamps): `pro.felixo.logicalclocks.lamport.LamportClock`
+* A [vector clock](https://en.wikipedia.org/wiki/Vector_clock): `pro.felixo.logicalclocks.vector.VectorClock`
+* A [hybrid logical clock (HLC)](https://martinfowler.com/articles/patterns-of-distributed-systems/hybrid-clock.html): `pro.felixo.logicalclocks.hybrid.HybridClock`
+
+All clocks generate timestamps that can be used to [causally order](https://en.wikipedia.org/wiki/Happened-before)
+events that occur in a distributed system. Refer to the documentation of the individual clocks, as well as to the
+articles linked above, for details.
+
+Note that in a distributed system, all of these clocks may generate timestamps that compare equal. Therefore, in case
+consensus on a [strict total ordering](https://en.wikipedia.org/wiki/Total_order) of events is required, a tiebreaker
+must be used. Typically, this is done by including the unique ID of the node that generated the event in the comparison,
+for example like this:
+
+```kotlin
+data class Event(
+    val timestamp: Long,
+    val nodeId: String
+) : Comparable<Event> {
+    override fun compareTo(other: Event) =
+        compareBy<Event> { timestamp }
+            .thenBy { nodeId }
+            .compare(this, other)
+}
+```
+
+The library contains no platform-specific code.
+
+Note that this library is still in its early stages, and the API is subject to change in any 0.x version.
+
+## Usage
+
+All clocks implement the `LogicalClock` interface. In order to generate a timestamp for an event that occurred locally,
+call the `tick` method. When receiving an event from another node, call the `tock` method with the timestamp of the
+received event.
+
+Since in a typical application of logical clocks, I/O and concurrency are involved, the clocks are designed to be used
+in coroutines and are thread-safe.
+
+### Lamport clock
+
+A Lamport clock is a simple logical clock that can be used to provide a causal ordering of events. Its
+potential disadvantage is that it may order concurrent events in a way that is undesirable for a given application.
+
+This is a usage example for a Lamport clock that uses `Long` as its timestamp type and persists updates using a function
+`setPersistedTime(time: Long): Unit`:
+
+```kotlin
+import pro.felixo.logicalclocks.lamport.longLamportClock
+
+val initialTime: Long = getPersistedTime() ?: 0L
+
+// Instantiate the clock. This is a shorthand for: val clock = LamportClock(initialTime, Long::inc, ::persistTime)
+val clock: LamportClock<Long> = longLamportClock(
+    initialTime = initialTime,
+    onNewTime = ::persistTime
+)
+
+// Generate a timestamp for an event that occurred locally:
+val timestamp: Long = clock.tick()
+
+// Update the clock with the timestamp of an event that was received from another node:
+clock.tock(receivedTimestamp)
+```
+
+### Vector clock
+
+Vector clocks generate timestamps with precise information about which events were known at the time that an
+event occurred. Their disadvantage is that they are large and computationally expensive: their size, as well as
+the computational complexity of comparing two instances, are proportional to the number of nodes in the system.
+
+This is a usage example for a Vector clock that uses `String` values to identify nodes, and `Long` as its timestamp
+type. It persists updates using a function `persistTime(time: VectorTimestamp<String, Long>): Unit`:
+
+```kotlin
+import pro.felixo.logicalclocks.vector.VectorClock
+import pro.felixo.logicalclocks.vector.VectorTimestamp
+
+val localNodeId = "local"
+val initialTime: Long = getPersistedTime() ?: VectorTimestamp("local" to 0L)
+
+// Instantiate the clock:
+val clock = VectorClock<String, Long>(
+    localNodeId = localNodeId,
+    initialTime = initialTime,
+    incrementNodeTime = Long::inc,
+    onNewTime = ::persistTime
+)
+
+// Generate a timestamp for an event that occurred locally:
+val timestamp: VectorTimestamp<String, Long> = clock.tick()
+
+// Update the clock with the timestamp of an event that was received from another node:
+clock.tock(receivedTimestamp)
+```
+
+### Hybrid logical clock (HLC)
+
+A hybrid logical clock (HLC) that combines a physical clock with a logical component.
+
+It is much like a Lamport clock in that can be used to provide a causal ordering of events. Its advantage over
+a Lamport clock is that it can additionally order concurrent events using physical time. Note that this advantage is
+however lost in cases where a participant's physical clock is faulty, especially if it returns times significantly
+into the future.
+
+Note that the physical component of a timestamp generated by this clock does not necessarily correspond to the actual
+physical time when the timestamp was generated.
+
+This is a usage example for a Hybrid clock where physical time is expressed as an `Instant` and the logical component
+as a `Long`. It persists updates using a function `persistTime(time: HybridTimestamp<Instant, Long>): Unit`:
+
+```kotlin
+import kotlinx.datetime.Clock
+import kotlinx.datetime.Instant
+import pro.felixo.logicalclocks.hybrid.HybridClock
+import pro.felixo.logicalclocks.hybrid.HybridTimestamp
+
+val physicalClock: Clock = Clock.System
+
+val defaultLogicalTime: Long = 0L
+val initialTime: Long = getPersistedTime() ?: HybridTimestamp(physicalClock.now(), defaultLogicalTime)
+
+// Instantiate the clock:
+val clock = HybridClock<Instant, Long>(
+    initialTime = initialTime,
+    defaultLogical = defaultLogicalTime,
+    currentPhysical = { physicalClock.now() },
+    incrementLogical = Long::inc,
+    onNewTime = ::persistTime
+)
+
+// Generate a timestamp for an event that occurred locally:
+val timestamp: HybridTimestamp<Instant, Long> = clock.tick()
+
+// Update the clock with the timestamp of an event that was received from another node:
+clock.tock(receivedTimestamp)
+```
+
+## Contributing
+
+All contributions, whether issues raised or pull requests submitted, are appreciated. If you report a bug, please
+consider including a unit test that demonstrates it, even if you aren't providing a fix.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
+
+## Contact
+
+For any questions, issues, or discussions, feel free to:
+- Email: [pub@felix-engelhardt.de](mailto:pub@felix-engelhardt.de)
+- Raise an issue on the project's GitHub repository.
